@@ -5473,6 +5473,21 @@ object ZStreamSpec extends ZIOBaseSpec {
             }
           }
         ),
+        suite("fromInputStreamInterruptible")(
+          test("should handle interruption of blocking reads") {
+            val neverEndingStream = ZStream.fromZIO(ZIO.never)
+            for {
+              inputStream <- neverEndingStream.toInputStream
+              fiber <- ZStream
+                         .fromInputStreamInterruptible(inputStream)
+                         .runCollect
+                         .fork
+              _      <- TestClock.adjust(500.milliseconds)
+              _      <- fiber.interrupt
+              result <- fiber.await
+            } yield assert(result)(isInterrupted)
+          } @@ TestAspect.timeout(5.seconds)
+        ),
         test("fromIterable")(check(Gen.small(Gen.chunkOfN(_)(Gen.int))) { l =>
           def lazyL = l
           assertZIO(ZStream.fromIterable(lazyL).runCollect)(equalTo(l))

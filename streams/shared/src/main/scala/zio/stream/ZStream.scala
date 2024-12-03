@@ -4351,6 +4351,42 @@ object ZStream extends ZStreamPlatformSpecificConstructors {
   )(implicit trace: Trace): ZStream[R, IOException, Byte] =
     ZStream.scoped[R](is).flatMap(fromInputStream(_, chunkSize))
 
+  def fromInputStreamInterruptible(
+    is: => InputStream,
+    chunkSize: => Int = ZStream.DefaultChunkSize
+  )(implicit trace: Trace): ZStream[Any, IOException, Byte] =
+    ZStream.repeatZIOChunkOption {
+      for {
+        available <- ZIO.attempt(is.available()).refineToOrDie[IOException].asSomeError
+        bytes <- if (available > 0) {
+                   for {
+                     buffer <- ZIO.succeed(Array.ofDim[Byte](available))
+                     bytesRead <- ZIO
+                                    .attempt(is.read(buffer))
+                                    .refineToOrDie[IOException]
+                                    .asSomeError
+                     bytes <- if (bytesRead < 0) Exit.fail(None)
+                              else if (bytesRead == 0) Exit.succeed(Chunk.empty)
+                              else if (bytesRead < available) Exit.succeed(Chunk.fromArray(buffer).take(bytesRead))
+                              else Exit.succeed(Chunk.fromArray(buffer))
+                   } yield bytes
+                 } else {
+                   for {
+                     buffer <- ZIO.succeed[Array[Byte]](Array.ofDim[Byte](chunkSize))
+                     bytesRead <-
+                       ZIO
+                         .attemptBlockingIO(is.read(buffer))
+                         .asSomeError
+                         .disconnect
+                     bytes <- if (bytesRead < 0) Exit.fail(None)
+                              else if (bytesRead == 0) Exit.succeed(Chunk.empty)
+                              else if (bytesRead < chunkSize) Exit.succeed(Chunk.fromArray(buffer).take(bytesRead))
+                              else Exit.succeed(Chunk.fromArray(buffer))
+                   } yield bytes
+                 }
+      } yield bytes
+    }
+
   /**
    * Creates a stream from an iterable collection of values
    */
